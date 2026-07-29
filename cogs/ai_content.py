@@ -5,6 +5,15 @@ from discord.ext import commands
 import ai_client
 from prompts import VOICEOVER_SYSTEM_PROMPT
 
+# Appended separately rather than edited into the original prompt above, so the
+# Custom GPT instructions stay verbatim and this guardrail is easy to find/remove.
+GROUNDING_ADDENDUM = (
+    "\n\nImportant: only reference amenities, nearby attractions, or property "
+    "features that are explicitly provided to you in the user message. If none "
+    "are provided, keep filming tips generic to the property tier and do not "
+    "invent specific named features, restaurants, views, or area attractions."
+)
+
 TIER_CHOICES = [
     app_commands.Choice(name="Convenience", value="convenience"),
     app_commands.Choice(name="Budget", value="budget"),
@@ -62,6 +71,8 @@ class AIContent(commands.Cog):
         property_name="Property name exactly as it shows on TikTok GO / Google Maps",
         tier="Property tier",
         creator_level="Creator's level (affects script tone)",
+        amenities="Real standout features (e.g. 'rooftop pool, walkable to Broadway, in-room jacuzzi'). "
+                   "Without this, filming tips will be generic — the AI doesn't know the property.",
     )
     @app_commands.choices(tier=TIER_CHOICES, creator_level=LEVEL_CHOICES)
     async def voiceover(
@@ -70,6 +81,7 @@ class AIContent(commands.Cog):
         property_name: str,
         tier: app_commands.Choice[str],
         creator_level: app_commands.Choice[str],
+        amenities: str = None,
     ):
         # Generation can take a few seconds, so defer to avoid Discord's 3s timeout.
         await interaction.response.defer(thinking=True)
@@ -79,9 +91,22 @@ class AIContent(commands.Cog):
             f"Property tier: {tier.value}\n"
             f"Creator Level: {creator_level.value}"
         )
+        if amenities:
+            user_message += (
+                f"\nKnown amenities/features (use these specifically, by name, in the "
+                f"filming tips — do not invent features not listed here): {amenities}"
+            )
+        else:
+            user_message += (
+                "\nNo specific amenities were provided. Keep filming tips grounded in "
+                "generic best practices for this tier — do not invent specific named "
+                "amenities, area attractions, or features you don't actually know."
+            )
 
         try:
-            result = await ai_client.generate(VOICEOVER_SYSTEM_PROMPT, user_message)
+            result = await ai_client.generate(
+                VOICEOVER_SYSTEM_PROMPT + GROUNDING_ADDENDUM, user_message
+            )
         except RuntimeError as e:
             await interaction.followup.send(f"⚠️ {e}")
             return
@@ -89,7 +114,8 @@ class AIContent(commands.Cog):
             await interaction.followup.send(f"⚠️ Generation failed: {e}")
             return
 
-        header = f"**🎬 Voiceover script — {property_name}** ({tier.name} · {creator_level.name})\n\n"
+        amenities_note = f" · amenities: {amenities}" if amenities else " · ⚠️ no amenities given, tips may be generic"
+        header = f"**🎬 Voiceover script — {property_name}** ({tier.name} · {creator_level.name}{amenities_note})\n\n"
         full_text = header + result
 
         chunks = chunk_text(full_text)
