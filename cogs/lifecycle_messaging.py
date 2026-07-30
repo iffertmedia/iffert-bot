@@ -1,5 +1,7 @@
 import asyncio
+import os
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
@@ -35,12 +37,14 @@ async def event_autocomplete(interaction: discord.Interaction, current: str):
     if interaction.guild is None:
         return []
     current = current.lower()
+    tz_name = os.getenv("BOT_TIMEZONE", "America/Chicago")
     choices = []
     for event in interaction.guild.scheduled_events:
         if current in event.name.lower():
             label = event.name
             if event.start_time:
-                label += f" ({event.start_time.strftime('%b %d')})"
+                local_start = event.start_time.astimezone(ZoneInfo(tz_name))
+                label += f" ({local_start.strftime('%b %d')})"
             choices.append(app_commands.Choice(name=label[:100], value=str(event.id)))
     return choices[:25]
 

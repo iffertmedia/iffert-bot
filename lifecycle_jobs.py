@@ -9,6 +9,8 @@ reference (module path + function name), not by live object.
 """
 
 import asyncio
+import os
+from zoneinfo import ZoneInfo
 import discord
 
 import messaging_db
@@ -26,8 +28,14 @@ def render_template(template: str, event=None, member=None) -> str:
     if event is not None:
         text = text.replace("{event_name}", event.name)
         if event.start_time:
-            text = text.replace("{event_date}", event.start_time.strftime("%B %d"))
-            text = text.replace("{event_time}", event.start_time.strftime("%I:%M %p"))
+            # Discord's API always returns start_time in UTC; convert to the
+            # configured local timezone before formatting for display,
+            # otherwise every event time shown to people is off by however
+            # many hours UTC is ahead of them.
+            tz_name = os.getenv("BOT_TIMEZONE", "America/Chicago")
+            local_start = event.start_time.astimezone(ZoneInfo(tz_name))
+            text = text.replace("{event_date}", local_start.strftime("%B %d"))
+            text = text.replace("{event_time}", local_start.strftime("%I:%M %p"))
     if member is not None:
         name = getattr(member, "display_name", None) or str(member)
         text = text.replace("{user_name}", name)
