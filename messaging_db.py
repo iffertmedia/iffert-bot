@@ -24,6 +24,10 @@ DEFAULT_FOLLOWUP_MESSAGE = (
     "have any feedback."
 )
 DEFAULT_FOLLOWUP_DELAY_MINUTES = 0
+DEFAULT_REMINDER_MESSAGE = (
+    "⏰ Reminder: {event_name} starts at {event_time} on {event_date}! See you soon."
+)
+DEFAULT_REMINDER_MINUTES_BEFORE = 60
 
 
 def _connect() -> sqlite3.Connection:
@@ -44,6 +48,14 @@ def init_db():
                 followup_scheduled INTEGER DEFAULT 0
             )
         """)
+        # Migration: add reminder columns for installs where this table
+        # already existed before reminders were added. ALTER TABLE has no
+        # "IF NOT EXISTS" in SQLite, so just ignore the error if it's already there.
+        for column_def in ("reminder_message TEXT", "reminder_minutes_before INTEGER"):
+            try:
+                conn.execute(f"ALTER TABLE event_config ADD COLUMN {column_def}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         conn.execute("""
             CREATE TABLE IF NOT EXISTS event_registrants (
                 event_id INTEGER,
@@ -91,6 +103,14 @@ def get_default_followup_delay() -> int:
     return int(get_setting("default_followup_delay_minutes", str(DEFAULT_FOLLOWUP_DELAY_MINUTES)))
 
 
+def get_default_reminder_message() -> str:
+    return get_setting("default_reminder_message", DEFAULT_REMINDER_MESSAGE)
+
+
+def get_default_reminder_minutes_before() -> int:
+    return int(get_setting("default_reminder_minutes_before", str(DEFAULT_REMINDER_MINUTES_BEFORE)))
+
+
 def get_log_channel_id():
     val = get_setting("log_channel_id")
     return int(val) if val else None
@@ -99,16 +119,21 @@ def get_log_channel_id():
 # ---- per-event overrides ----
 
 def set_event_config(event_id: int, registration_message: str = None,
-                      followup_message: str = None, followup_delay_minutes: int = None):
+                      followup_message: str = None, followup_delay_minutes: int = None,
+                      reminder_message: str = None, reminder_minutes_before: int = None):
     with _lock, _connect() as conn:
         conn.execute("""
-            INSERT INTO event_config (event_id, registration_message, followup_message, followup_delay_minutes)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO event_config (event_id, registration_message, followup_message,
+                                       followup_delay_minutes, reminder_message, reminder_minutes_before)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(event_id) DO UPDATE SET
                 registration_message = COALESCE(excluded.registration_message, event_config.registration_message),
                 followup_message = COALESCE(excluded.followup_message, event_config.followup_message),
-                followup_delay_minutes = COALESCE(excluded.followup_delay_minutes, event_config.followup_delay_minutes)
-        """, (event_id, registration_message, followup_message, followup_delay_minutes))
+                followup_delay_minutes = COALESCE(excluded.followup_delay_minutes, event_config.followup_delay_minutes),
+                reminder_message = COALESCE(excluded.reminder_message, event_config.reminder_message),
+                reminder_minutes_before = COALESCE(excluded.reminder_minutes_before, event_config.reminder_minutes_before)
+        """, (event_id, registration_message, followup_message, followup_delay_minutes,
+              reminder_message, reminder_minutes_before))
         conn.commit()
 
 

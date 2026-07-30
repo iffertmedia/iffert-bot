@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from apscheduler.triggers.date import DateTrigger
+from apscheduler.jobstores.base import JobLookupError
 
 import messaging_db
 import lifecycle_jobs
@@ -54,7 +55,56 @@ class LifecycleMessaging(commands.Cog):
         self.bot = bot
         lifecycle_jobs.set_bot(bot)
 
+    @commands.Cog.listener()
+    async def on_ready(self):
+        # Catch-up scan: schedule reminders for any upcoming events that
+        # don't already have one -- covers events created before this
+        # feature existed, or while the bot was offline. Cheap to run on
+        # every reconnect since _schedule_reminder just overwrites in place.
+        for guild in self.bot.guilds:
+            for event in guild.scheduled_events:
+                if event.status == discord.EventStatus.scheduled:
+                    self._schedule_reminder(event)
+
+    def _schedule_reminder(self, event: discord.ScheduledEvent):
+        """(Re)schedules the pre-event reminder job. Safe to call multiple
+        times for the same event -- replace_existing means a reschedule
+        (e.g. after the event's time changes) just overwrites the old one."""
+        if event.start_time is None:
+            return
+
+        cfg = messaging_db.get_event_config(event.id)
+        minutes_before = cfg.get("reminder_minutes_before")
+        if minutes_before is None:
+            minutes_before = messaging_db.get_default_reminder_minutes_before()
+
+        now = datetime.now(event.start_time.tzinfo)
+        if event.start_time <= now:
+            return  # event already started/passed, nothing to remind about
+
+        run_date = event.start_time - timedelta(minutes=minutes_before)
+        if run_date <= now:
+            run_date = now  # reminder window already passed -- send right away instead of skipping
+
+        self.bot.scheduler.add_job(
+            lifecycle_jobs.send_reminder_job,
+            trigger=DateTrigger(run_date=run_date),
+            kwargs={"guild_id": event.guild.id, "event_id": event.id},
+            id=f"reminder-{event.id}",
+            replace_existing=True,
+        )
+
+    def _cancel_reminder(self, event_id: int):
+        try:
+            self.bot.scheduler.remove_job(f"reminder-{event_id}")
+        except JobLookupError:
+            pass
+
     # ---- automatic listeners ----
+
+    @commands.Cog.listener()
+    async def on_scheduled_event_create(self, event: discord.ScheduledEvent):
+        self._schedule_reminder(event)
 
     @commands.Cog.listener()
     async def on_scheduled_event_user_add(self, event: discord.ScheduledEvent, user: discord.User):
@@ -82,6 +132,13 @@ class LifecycleMessaging(commands.Cog):
 
     @commands.Cog.listener()
     async def on_scheduled_event_update(self, before: discord.ScheduledEvent, after: discord.ScheduledEvent):
+        if after.status in (discord.EventStatus.canceled, discord.EventStatus.completed):
+            self._cancel_reminder(after.id)
+        elif before.start_time != after.start_time:
+            # Event got rescheduled -- move the reminder to match, otherwise
+            # it fires at the original (now wrong) time.
+            self._schedule_reminder(after)
+
         just_completed = (
             before.status != discord.EventStatus.completed
             and after.status == discord.EventStatus.completed
@@ -107,11 +164,13 @@ class LifecycleMessaging(commands.Cog):
 
     @app_commands.command(
         name="event_message_setup",
-        description="Set custom registration/follow-up messages for one event (leave fields blank to use defaults).",
+        description="Set custom registration/reminder/follow-up messages for one event (leave fields blank to use defaults).",
     )
     @app_commands.describe(
         event="The event to configure",
         registration_message="Custom registration DM. Placeholders: {user_name} {event_name} {event_date} {event_time}",
+        reminder_message="Custom pre-event reminder DM. Same placeholders available.",
+        reminder_minutes_before="Minutes before the event starts to send the reminder",
         followup_message="Custom follow up DM. Same placeholders available.",
         followup_delay_minutes="Minutes after the event ends to send the follow up (0 = immediately)",
     )
@@ -122,12 +181,22 @@ class LifecycleMessaging(commands.Cog):
         interaction: discord.Interaction,
         event: str,
         registration_message: str = None,
+        reminder_message: str = None,
+        reminder_minutes_before: int = None,
         followup_message: str = None,
         followup_delay_minutes: int = None,
     ):
+        event_id = int(event)
         messaging_db.set_event_config(
-            int(event), registration_message, followup_message, followup_delay_minutes
+            event_id, registration_message, followup_message, followup_delay_minutes,
+            reminder_message, reminder_minutes_before,
         )
+        # If the reminder timing changed, reschedule it immediately rather
+        # than waiting for the next event update to pick up the new value.
+        if reminder_minutes_before is not None:
+            scheduled_event = interaction.guild.get_scheduled_event(event_id)
+            if scheduled_event:
+                self._schedule_reminder(scheduled_event)
         await interaction.response.send_message(
             "✅ Saved. This event will use the custom values you set (anything left blank still uses the default).",
             ephemeral=True,
@@ -135,10 +204,12 @@ class LifecycleMessaging(commands.Cog):
 
     @app_commands.command(
         name="messaging_defaults",
-        description="View or update the default registration/follow-up templates used for all events.",
+        description="View or update the default registration/reminder/follow-up templates used for all events.",
     )
     @app_commands.describe(
         registration_message="New default registration DM (leave blank to just view current defaults)",
+        reminder_message="New default pre-event reminder DM",
+        reminder_minutes_before="New default minutes before an event starts to send the reminder",
         followup_message="New default follow up DM",
         followup_delay_minutes="New default delay in minutes after an event ends",
     )
@@ -147,22 +218,31 @@ class LifecycleMessaging(commands.Cog):
         self,
         interaction: discord.Interaction,
         registration_message: str = None,
+        reminder_message: str = None,
+        reminder_minutes_before: int = None,
         followup_message: str = None,
         followup_delay_minutes: int = None,
     ):
         if registration_message:
             messaging_db.set_setting("default_registration_message", registration_message)
+        if reminder_message:
+            messaging_db.set_setting("default_reminder_message", reminder_message)
+        if reminder_minutes_before is not None:
+            messaging_db.set_setting("default_reminder_minutes_before", str(reminder_minutes_before))
         if followup_message:
             messaging_db.set_setting("default_followup_message", followup_message)
         if followup_delay_minutes is not None:
             messaging_db.set_setting("default_followup_delay_minutes", str(followup_delay_minutes))
 
         reg = messaging_db.get_default_registration_message()
+        rem = messaging_db.get_default_reminder_message()
+        rem_minutes = messaging_db.get_default_reminder_minutes_before()
         fu = messaging_db.get_default_followup_message()
         delay = messaging_db.get_default_followup_delay()
         await interaction.response.send_message(
             f"**Current defaults**\n\n"
             f"Registration DM:\n{reg}\n\n"
+            f"Reminder DM (sent {rem_minutes} min before an event starts):\n{rem}\n\n"
             f"Follow up DM (sent {delay} min after an event ends):\n{fu}\n\n"
             f"Placeholders available: `{{user_name}}` `{{event_name}}` `{{event_date}}` `{{event_time}}`",
             ephemeral=True,

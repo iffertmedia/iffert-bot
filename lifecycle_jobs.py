@@ -42,22 +42,9 @@ def render_template(template: str, event=None, member=None) -> str:
     return text
 
 
-async def send_followups_job(guild_id: int, event_id: int):
-    """Called by the scheduler once an event's follow-up delay has elapsed."""
-    if _bot is None:
-        print("send_followups_job called before bot was ready; skipping.")
-        return
-
-    guild = _bot.get_guild(guild_id)
-    if guild is None:
-        print(f"send_followups_job: guild {guild_id} not found.")
-        return
-
-    event = guild.get_scheduled_event(event_id)
-    cfg = messaging_db.get_event_config(event_id)
-    template = cfg.get("followup_message") or messaging_db.get_default_followup_message()
+async def _send_to_registrants(guild, event, event_id: int, template: str, label: str):
+    """Shared send loop used by both the reminder and follow up jobs."""
     user_ids = messaging_db.get_registrants(event_id)
-
     sent, failed = 0, []
     for user_id in user_ids:
         member = guild.get_member(user_id)
@@ -72,7 +59,7 @@ async def send_followups_job(guild_id: int, event_id: int):
         await asyncio.sleep(1)  # gentle pacing to avoid Discord DM rate limits
 
     event_name = event.name if event else f"event {event_id}"
-    summary = f"📨 Follow up sent for **{event_name}**: {sent} delivered."
+    summary = f"{label} for **{event_name}**: {sent} delivered."
     if failed:
         shown = ", ".join(failed[:20])
         more = f" (+{len(failed) - 20} more)" if len(failed) > 20 else ""
@@ -86,4 +73,40 @@ async def send_followups_job(guild_id: int, event_id: int):
             try:
                 await channel.send(summary)
             except Exception as e:
-                print(f"Failed to post follow up summary to log channel: {e}")
+                print(f"Failed to post {label.lower()} summary to log channel: {e}")
+
+
+async def send_reminder_job(guild_id: int, event_id: int):
+    """Called by the scheduler shortly before an event starts."""
+    if _bot is None:
+        print("send_reminder_job called before bot was ready; skipping.")
+        return
+    guild = _bot.get_guild(guild_id)
+    if guild is None:
+        print(f"send_reminder_job: guild {guild_id} not found.")
+        return
+
+    event = guild.get_scheduled_event(event_id)
+    if event is not None and event.status != discord.EventStatus.scheduled:
+        return  # event got canceled or already started/ended before the reminder fired
+
+    cfg = messaging_db.get_event_config(event_id)
+    template = cfg.get("reminder_message") or messaging_db.get_default_reminder_message()
+    await _send_to_registrants(guild, event, event_id, template, "⏰ Reminder sent")
+
+
+async def send_followups_job(guild_id: int, event_id: int):
+    """Called by the scheduler once an event's follow-up delay has elapsed."""
+    if _bot is None:
+        print("send_followups_job called before bot was ready; skipping.")
+        return
+
+    guild = _bot.get_guild(guild_id)
+    if guild is None:
+        print(f"send_followups_job: guild {guild_id} not found.")
+        return
+
+    event = guild.get_scheduled_event(event_id)
+    cfg = messaging_db.get_event_config(event_id)
+    template = cfg.get("followup_message") or messaging_db.get_default_followup_message()
+    await _send_to_registrants(guild, event, event_id, template, "📨 Follow up sent")
