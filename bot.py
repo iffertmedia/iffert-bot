@@ -36,6 +36,7 @@ class IffertBot(commands.Bot):
         await self.load_extension("cogs.ai_content")
         await self.load_extension("cogs.cover")
         await self.load_extension("cogs.accreview")
+        await self.load_extension("cogs.lifecycle_messaging")
 
         self.scheduler.start()
 
