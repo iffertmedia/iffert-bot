@@ -1,5 +1,6 @@
 import os
 import discord
+from discord import app_commands
 from discord.ext import commands
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -18,6 +19,25 @@ intents.members = True  # needed later for role assignment / welcome messages
 os.makedirs("data", exist_ok=True)
 
 
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    """Friendly messages for command errors instead of Discord's generic
+    'the application did not respond' -- most commonly hit when someone
+    without Manage Server tries a staff-only command."""
+    if isinstance(error, app_commands.MissingPermissions):
+        message = "⚠️ You need the Manage Server permission to use this command."
+    else:
+        message = f"⚠️ Something went wrong running that command: {error}"
+        print(f"Unhandled app command error: {error}")
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except Exception:
+        pass
+
+
 class IffertBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
@@ -30,6 +50,7 @@ class IffertBot(commands.Bot):
 
     async def setup_hook(self):
         jobs.set_bot(self)
+        self.tree.on_error = on_app_command_error
 
         await self.load_extension("cogs.general")
         await self.load_extension("cogs.scheduler")
@@ -37,6 +58,7 @@ class IffertBot(commands.Bot):
         await self.load_extension("cogs.cover")
         await self.load_extension("cogs.accreview")
         await self.load_extension("cogs.lifecycle_messaging")
+        await self.load_extension("cogs.creator_management")
 
         self.scheduler.start()
 
