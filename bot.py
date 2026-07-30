@@ -59,6 +59,8 @@ class IffertBot(commands.Bot):
         await self.load_extension("cogs.accreview")
         await self.load_extension("cogs.lifecycle_messaging")
         await self.load_extension("cogs.creator_management")
+        await self.load_extension("cogs.rewards")
+        await self.load_extension("cogs.launchpad")
 
         self.scheduler.start()
 
