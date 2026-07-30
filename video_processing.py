@@ -15,7 +15,8 @@ import imageio_ffmpeg
 
 FFMPEG_BIN = imageio_ffmpeg.get_ffmpeg_exe()
 
-FRAME_FRACTIONS = (0.02, 0.25, 0.50, 0.75, 0.95)  # sample points across the video
+DEFAULT_FRAME_COUNT = 5     # enough to judge camera work/pacing when audio carries the message
+TEXT_MODE_FRAME_COUNT = 9   # more sampling needed since frames ARE the message source here
 FRAME_WIDTH = 768  # keep vision API payload small; more than enough detail to judge shots
 
 
@@ -40,12 +41,19 @@ def get_duration_seconds(video_path: str) -> float:
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
-def extract_frames(video_path: str, out_dir: str) -> list[str]:
-    """Extracts frames at fixed fractional points across the video. Returns file paths."""
+def extract_frames(video_path: str, out_dir: str, n_frames: int = DEFAULT_FRAME_COUNT) -> list[str]:
+    """Extracts frames at evenly-spaced points across the video. Returns file paths."""
     duration = get_duration_seconds(video_path)
     frame_paths = []
 
-    for i, fraction in enumerate(FRAME_FRACTIONS):
+    if n_frames == 1:
+        fractions = [0.5]
+    else:
+        start, end = 0.02, 0.95
+        step = (end - start) / (n_frames - 1)
+        fractions = [start + i * step for i in range(n_frames)]
+
+    for i, fraction in enumerate(fractions):
         timestamp = max(0.1, duration * fraction)
         out_path = os.path.join(out_dir, f"frame_{i}.jpg")
         cmd = [

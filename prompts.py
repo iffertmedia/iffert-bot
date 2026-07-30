@@ -106,6 +106,8 @@ If the transcript contains what appears to be song or music lyrics rather than t
 
 You are given several still frames sampled across the video's timeline. Use them to assess camera movement and framing, shot selection, lighting, and whether the delivery style (selfie vs filmed by someone else, steady vs shaky implied by framing) matches the Delivery Rules above. Only describe what you can actually observe in the frames, do not invent details about parts of the video you can't see.
 
+If no spoken transcript is provided, this video relies on on-screen text overlays instead of narration. In that case, read any text visible in the frames yourself and treat it as the script for grading purposes. Piece together the on-screen text across the different frames into a coherent sense of what the video is communicating, and note in your Script & Messaging section that this was read from on-screen text rather than spoken narration. If frames don't land on distinct text cards and the on-screen message is unclear or only partially visible, say so plainly rather than guessing at text you can't actually read, and note that a lower frame-sample rate may have missed some cards.
+
 === OUTPUT FORMAT ===
 
 Write in clear sections with bold headers, no dashes anywhere, minimal emoji. For each section give a brief natural sounding assessment plus a concrete, specific suggestion (or an explicit note that nothing needs to change if it's genuinely strong). Sections:

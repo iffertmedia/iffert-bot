@@ -16,7 +16,7 @@ DISCORD_MESSAGE_LIMIT = 1900
 
 MODE_CHOICES = [
     app_commands.Choice(name="Voiceover (transcribe spoken audio)", value="voiceover"),
-    app_commands.Choice(name="Text only (I'll type my script/captions)", value="text"),
+    app_commands.Choice(name="Text overlay only (no spoken narration)", value="text"),
 ]
 
 LEVEL_CHOICES = [
@@ -52,11 +52,15 @@ def chunk_text(text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
     return chunks
 
 
-def _process_video_sync(video_path: str, need_audio: bool) -> tuple[list[str], str | None]:
+def _process_video_sync(video_path: str, mode: str) -> tuple[list[str], str | None]:
     """Runs in a thread executor since ffmpeg subprocess calls are blocking."""
     tmp_dir = os.path.dirname(video_path)
-    frames = video_processing.extract_frames(video_path, tmp_dir)
-    audio_path = video_processing.extract_audio(video_path, tmp_dir) if need_audio else None
+    n_frames = (
+        video_processing.TEXT_MODE_FRAME_COUNT if mode == "text"
+        else video_processing.DEFAULT_FRAME_COUNT
+    )
+    frames = video_processing.extract_frames(video_path, tmp_dir, n_frames=n_frames)
+    audio_path = video_processing.extract_audio(video_path, tmp_dir) if mode == "voiceover" else None
     return frames, audio_path
 
 
@@ -70,9 +74,8 @@ class AccReview(commands.Cog):
     )
     @app_commands.describe(
         video="The video to review (up to 100MB)",
-        mode="Grade from spoken voiceover audio, or from text you type yourself",
+        mode="Grade from spoken voiceover audio, or read on-screen text yourself (no typing needed)",
         creator_level="Your creator level (affects how strictly the script is graded)",
-        script_text="Required if mode is 'Text only': paste your script or on-screen text",
         property_name="Optional: hotel/property name for context",
     )
     @app_commands.choices(mode=MODE_CHOICES, creator_level=LEVEL_CHOICES)
@@ -82,7 +85,6 @@ class AccReview(commands.Cog):
         video: discord.Attachment,
         mode: app_commands.Choice[str],
         creator_level: app_commands.Choice[str],
-        script_text: str = None,
         property_name: str = None,
     ):
         if not (video.content_type or "").startswith("video/"):
@@ -96,13 +98,6 @@ class AccReview(commands.Cog):
             mb = video.size / (1024 * 1024)
             await interaction.response.send_message(
                 f"⚠️ That file is {mb:.0f}MB, which is over the 100MB limit. Try a smaller export.",
-                ephemeral=True,
-            )
-            return
-
-        if mode.value == "text" and not script_text:
-            await interaction.response.send_message(
-                "⚠️ Text mode needs the `script_text` field filled in with your script or on-screen text.",
                 ephemeral=True,
             )
             return
@@ -121,11 +116,10 @@ class AccReview(commands.Cog):
                 await interaction.followup.send(f"⚠️ Couldn't download the uploaded video: {e}")
                 return
 
-            need_audio = mode.value == "voiceover"
             try:
                 loop = asyncio.get_running_loop()
                 frames, audio_path = await loop.run_in_executor(
-                    None, _process_video_sync, video_path, need_audio
+                    None, _process_video_sync, video_path, mode.value
                 )
             except VideoProcessingError as e:
                 await interaction.followup.send(f"⚠️ {e}")
@@ -134,16 +128,17 @@ class AccReview(commands.Cog):
                 await interaction.followup.send(f"⚠️ Couldn't process the video: {e}")
                 return
 
-            transcript_or_text = script_text
+            transcript = None
             if mode.value == "voiceover":
                 if audio_path is None:
                     await interaction.followup.send(
                         "⚠️ This video doesn't seem to have an audio track. "
-                        "If it's a text-overlay-only video, try again with mode set to 'Text only'."
+                        "If it's a text-overlay-only video, try again with mode set to "
+                        "'Text overlay only'."
                     )
                     return
                 try:
-                    transcript_or_text = await ai_client.transcribe_audio(audio_path)
+                    transcript = await ai_client.transcribe_audio(audio_path)
                 except Exception as e:
                     await interaction.followup.send(f"⚠️ Transcription failed: {e}")
                     return
@@ -151,10 +146,15 @@ class AccReview(commands.Cog):
             context_lines = [f"Creator level: {creator_level.value}"]
             if property_name:
                 context_lines.append(f"Property: {property_name}")
-            context_lines.append(
-                f"Script source: {'transcribed voiceover audio' if mode.value == 'voiceover' else 'creator-provided text'}"
-            )
-            context_lines.append(f"Transcript/script:\n{transcript_or_text}")
+            if transcript:
+                context_lines.append("Script source: transcribed voiceover audio")
+                context_lines.append(f"Transcript:\n{transcript}")
+            else:
+                context_lines.append(
+                    "Script source: none provided. This video uses on-screen text overlays "
+                    "instead of spoken narration. Read the text directly from the provided "
+                    "frames and grade based on that."
+                )
             user_message = "\n".join(context_lines)
 
             try:
