@@ -164,7 +164,7 @@ class LifecycleMessaging(commands.Cog):
 
     @app_commands.command(
         name="event_message_setup",
-        description="Set custom registration/reminder/follow-up messages for one event (leave fields blank to use defaults).",
+        description="Set custom registration/reminder/follow-up messages for one event.",
     )
     @app_commands.describe(
         event="The event to configure",
